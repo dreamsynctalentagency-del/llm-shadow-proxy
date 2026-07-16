@@ -44,8 +44,17 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship non-Python resources inside the wheel. The bundled models.yaml is the
+# guaranteed-present fallback used when CONFIG_FILE points to a path that
+# doesn't exist at deploy time (see settings.load_app_config).
 [tool.setuptools.package-data]
-shadow_proxy = ["py.typed"]
+shadow_proxy = [
+  "py.typed",
+  "_bundled/config/*.yaml",
+]
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

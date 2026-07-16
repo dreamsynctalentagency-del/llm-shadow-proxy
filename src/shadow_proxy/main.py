@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — wi
     # guarantees we NEVER send a dummy DO_INFERENCE_API_KEY to DigitalOcean.
     settings.assert_runtime_ready()
 
+    # Loudly warn if any writable/readable path leaked into the Python install
+    # prefix (e.g. /opt/venv/lib/python3.X/...). This class of bug caused the
+    # DO App Platform outage on Jul-16 and is trivially diagnosable from logs.
+    settings.warn_on_suspicious_paths()
+
     config = load_app_config(settings.resolved_config_file())
     route = config.route("default")  # default route must exist
 

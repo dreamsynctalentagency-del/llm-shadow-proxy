@@ -18,13 +18,28 @@ customer request.
 
 from __future__ import annotations
 
+import logging
 import os
+from importlib import resources
 from pathlib import Path
 from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_log = logging.getLogger(__name__)
+
+# Substring markers used to detect resolved paths that leak into the Python
+# install prefix (e.g. ``/opt/venv/lib/python3.13/...``). Landing inside the
+# site-packages tree is always a bug — either a relative path anchored to the
+# wrong dir, or a package-internal resource being written to. See
+# :meth:`Settings.warn_on_suspicious_paths` for the loud-and-clear diagnostic.
+_INSTALL_PREFIX_MARKERS: tuple[str, ...] = (
+    "/site-packages/",
+    "/opt/venv/",
+    "/dist-packages/",
+)
 
 # Module-level record of where .env was actually loaded from (populated by
 # ``get_settings``). Exposed via :meth:`Settings.env_file_path` so main.py can
@@ -214,16 +229,43 @@ class Settings(BaseSettings):
     # Path anchoring
     #
     # Relative paths in .env / env vars (config_file, raw_store_filesystem_path,
-    # sqlite DATABASE_URL) are resolved against the directory that contains the
-    # loaded .env — NOT against ``os.getcwd()``. This makes ``.env`` fully
-    # portable: the app behaves identically whether it's launched from the
-    # project root, from ``/``, or from Docker's ``WORKDIR``.
+    # sqlite DATABASE_URL) need a base directory to resolve against. We walk
+    # a fixed precedence list of candidate anchors and pick the first that
+    # exists — the goal is that the app behaves identically whether it's
+    # launched from the project root, from ``/``, or from Docker's WORKDIR,
+    # and NEVER ends up anchored inside the Python install prefix
+    # (``/opt/venv/lib/pythonX.Y/site-packages/...``), which is the class of
+    # bug that caused the DO App Platform outage.
+    #
+    # Precedence (first hit wins):
+    #   1. Directory of the loaded ``.env`` (portable dev + explicit override).
+    #   2. ``$PWD`` if it contains a ``pyproject.toml`` OR a ``config/`` dir
+    #      (matches ``uvicorn`` launched from the repo root AND the Docker
+    #      layout where WORKDIR=/app and /app/config exists).
+    #   3. ``/app`` (Docker/PaaS runtime convention).
+    #   4. The installed package's own directory (``.../shadow_proxy/``) as a
+    #      last resort — safe for read-only resource lookups only. Writable
+    #      paths (DB, raw store) should always be driven by absolute-value
+    #      env vars in prod; :meth:`warn_on_suspicious_paths` shouts if a
+    #      writable path ends up under the install prefix.
     # ------------------------------------------------------------------
     def _anchor_dir(self) -> Path:
         if _LOADED_ENV_FILE is not None:
             return _LOADED_ENV_FILE.parent
-        # Fall back to the settings.py project root (works in Docker layout).
-        return Path(__file__).resolve().parents[2]
+
+        cwd = Path.cwd().resolve()
+        if (cwd / "pyproject.toml").is_file() or (cwd / "config").is_dir():
+            return cwd
+
+        app_dir = Path("/app")
+        if app_dir.is_dir():
+            return app_dir
+
+        # Last-resort fallback: the installed package directory itself
+        # (``.../site-packages/shadow_proxy/``). Only safe for read-only
+        # resource lookups — writable paths landing here will trip the
+        # startup warning in :meth:`warn_on_suspicious_paths`.
+        return Path(__file__).resolve().parent
 
     def _resolve_relative(self, raw: str) -> Path:
         p = Path(raw).expanduser()
@@ -248,6 +290,54 @@ class Settings(BaseSettings):
                     p = self._anchor_dir() / p
                 return f"{prefix}{p.resolve()}"
         return url
+
+    def _sqlite_db_path(self) -> Path | None:
+        """Return the resolved on-disk SQLite path, or None if non-SQLite."""
+        url = self.resolved_database_url()
+        for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+            if url.startswith(prefix):
+                return Path(url[len(prefix):])
+        return None
+
+    def warn_on_suspicious_paths(self) -> list[str]:
+        """Log a warning for any resolved path that leaks into the Python
+        install prefix (``/opt/venv/...``, ``.../site-packages/...``).
+
+        This condition is always a bug — it means a relative path was
+        resolved against the installed package directory instead of an
+        actual data / config location. We log at WARNING so the noise is
+        visible in prod logs but doesn't hard-fail the boot (the caller may
+        have supplied a bundled default that's fine to read).
+
+        Returns the list of formatted warning messages emitted (empty when
+        all resolved paths look sane) — handy for structured logging by the
+        caller.
+        """
+        anchor = self._anchor_dir()
+        checks: list[tuple[str, Path]] = [
+            ("config_file", self.resolved_config_file()),
+            ("raw_store_filesystem_path", self.resolved_raw_store_path()),
+        ]
+        db_path = self._sqlite_db_path()
+        if db_path is not None:
+            checks.append(("database_url (sqlite)", db_path))
+
+        warnings: list[str] = []
+        for label, path in checks:
+            s = str(path)
+            if any(marker in s for marker in _INSTALL_PREFIX_MARKERS):
+                msg = (
+                    f"suspicious resolved path: {label}={s} resolves inside the "
+                    f"Python install prefix (anchor_dir={anchor}). This usually "
+                    "means an env var is unset AND the CWD has no pyproject.toml "
+                    "/ config/ dir AND /app doesn't exist. Set the env var to an "
+                    "absolute path (CONFIG_FILE=/app/config/models.yaml, "
+                    "RAW_STORE_FILESYSTEM_PATH=/app/data/raw, "
+                    "DATABASE_URL=sqlite+aiosqlite:////app/data/comparisons.db)."
+                )
+                _log.warning(msg)
+                warnings.append(msg)
+        return warnings
 
 
 # --- Helper error messages -------------------------------------------------
@@ -336,10 +426,71 @@ class AppConfig(BaseModel):
             raise KeyError(f"Route '{name}' not defined in config") from exc
 
 
+def _bundled_config_path() -> Path:
+    """Return the on-disk path to the bundled ``models.yaml`` shipped in the
+    installed package.
+
+    NOTE: developer-side edits should be made to the top-level
+    ``config/models.yaml`` — the copy under ``src/shadow_proxy/_bundled/``
+    is the guaranteed-present fallback shipped in the wheel. When you edit
+    one, update the other (or add a build hook to auto-sync — see
+    pyproject.toml [tool.setuptools.package-data]).
+    """
+    resource = resources.files("shadow_proxy").joinpath("_bundled/config/models.yaml")
+    # importlib.resources returns a Traversable; for regular installs this is
+    # a real Path, but we go through as_file() for wheel/zip safety.
+    with resources.as_file(resource) as p:
+        return Path(p)
+
+
 def load_app_config(path: str | Path) -> AppConfig:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Config file not found: {p}")
+    """Load YAML app config from ``path`` with a bundled-resource fallback.
+
+    Resolution:
+
+    1. If ``path`` exists on disk, load it (the normal case — set via env
+       var ``CONFIG_FILE`` or the ``.env``-anchored default).
+    2. Otherwise fall back to the copy shipped inside the installed
+       ``shadow_proxy`` package under ``_bundled/config/models.yaml``. This
+       is what prevents crashes when the deploy-time filesystem layout
+       differs from the developer machine (e.g. a container missing the
+       ``/app/config/`` bind-mount, or a PaaS build that didn't copy the
+       ``config/`` directory).
+    3. If neither exists, raise ``FileNotFoundError`` naming BOTH candidates
+       so the operator can immediately see what went wrong.
+    """
+    primary = Path(path)
+    if primary.exists():
+        return _parse_config_yaml(primary)
+
+    try:
+        bundled = _bundled_config_path()
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        raise FileNotFoundError(
+            f"Config file not found: {primary} and no bundled fallback "
+            f"is available inside the shadow_proxy package ({exc})."
+        ) from exc
+
+    if bundled.exists():
+        _log.warning(
+            "app_config.fallback_to_bundled requested=%s bundled=%s "
+            "(set CONFIG_FILE to an absolute path pointing at your real "
+            "config/models.yaml to silence this).",
+            primary,
+            bundled,
+        )
+        return _parse_config_yaml(bundled)
+
+    raise FileNotFoundError(
+        f"Config file not found. Tried:\n"
+        f"  1. requested path : {primary}\n"
+        f"  2. bundled fallback: {bundled}\n"
+        "Neither path exists. Set CONFIG_FILE to a readable YAML file, or "
+        "reinstall the shadow_proxy package to restore the bundled default."
+    )
+
+
+def _parse_config_yaml(p: Path) -> AppConfig:
     data = yaml.safe_load(p.read_text()) or {}
     return AppConfig.model_validate(data)
 
