@@ -43,6 +43,36 @@ _log = get_logger("shadow_proxy.api.chat")
 router = APIRouter(prefix="/v1", tags=["chat"], dependencies=[ApiKeyDep])
 
 
+async def _shadow_gate(
+    request: Request,
+    dispatcher: CandidateDispatcher,
+    request_id: str,
+) -> tuple[bool, bool, float]:
+    """Sampling gate for shadow traffic. Returns (sampled_in, enqueued, rate).
+
+    Sample rate is read live from ``app.state.shadow_sample_rate`` so PUT
+    /v1/config takes effect immediately without a restart.
+    """
+    sample_rate = float(getattr(request.app.state, "shadow_sample_rate", 1.0))
+    sampled_in = random.random() < sample_rate
+    counters = getattr(request.app.state, "rt_counters", None)
+
+    enqueued = False
+    if sampled_in:
+        dispatch = await dispatcher.enqueue(CandidateJob(request_id=request_id))
+        enqueued = dispatch == DispatchStatus.ENQUEUED
+
+    if counters is not None:
+        counters["requests_total"] += 1
+        counters["requests_success"] += 1
+        if enqueued:
+            counters["shadow_enqueued"] += 1
+        elif not sampled_in:
+            counters["shadow_sampled_out"] += 1
+
+    return sampled_in, enqueued, sample_rate
+
+
 class ChatMessageIn(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str
@@ -156,13 +186,15 @@ async def chat(  # noqa: PLR0913 - fine here, all deps
                 detail=f"Primary LLM failed: {outcome.error}",
             )
 
-        dispatch = await dispatcher.enqueue(CandidateJob(request_id=request_id))
+        sampled_in, enqueued, sample_rate = await _shadow_gate(
+            request, dispatcher, request_id
+        )
 
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Primary-Model"] = route_cfg.primary.model_id
-        response.headers["X-Shadow-Enqueued"] = (
-            "true" if dispatch == DispatchStatus.ENQUEUED else "false"
-        )
+        response.headers["X-Shadow-Enqueued"] = "true" if enqueued else "false"
+        response.headers["X-Shadow-Sampled"] = "true" if sampled_in else "false"
+        response.headers["X-Shadow-Sample-Rate"] = f"{sample_rate:.3f}"
 
         metrics.requests_total.labels(route=body.route, status="200").inc()
 

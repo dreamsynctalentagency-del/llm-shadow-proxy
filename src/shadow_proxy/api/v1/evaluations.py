@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field
 
 from shadow_proxy.api.deps import get_config, get_raw_store, get_settings, get_store
 from shadow_proxy.evaluator import Verdict
@@ -220,8 +220,69 @@ async def get_evaluation_raw(
     return base
 
 
+class MetricsOut(BaseModel):
+    """Real-time business metrics summary for /v1/metrics."""
+
+    requests_total: int
+    requests_success: int
+    requests_error: int
+    shadow_enqueued: int
+    shadow_sampled_out: int
+    shadow_errors: int
+    shadow_timeouts: int
+    verdict_match: int
+    verdict_mismatch: int
+    verdict_invalid_json: int
+    exact_match_rate_pct: float
+    shadow_sample_rate: float
+
+
+@router.get("/metrics", response_model=MetricsOut)
+async def business_metrics(request: Request) -> MetricsOut:
+    """Real-time counters: total requests, shadow errors/timeouts, match %."""
+    c = request.app.state.rt_counters
+    finalized = c["verdict_match"] + c["verdict_mismatch"] + c["verdict_invalid_json"]
+    pct = (100.0 * c["verdict_match"] / finalized) if finalized else 0.0
+    return MetricsOut(
+        requests_total=c["requests_total"],
+        requests_success=c["requests_success"],
+        requests_error=c["requests_error"],
+        shadow_enqueued=c["shadow_enqueued"],
+        shadow_sampled_out=c["shadow_sampled_out"],
+        shadow_errors=c["shadow_errors"],
+        shadow_timeouts=c["shadow_timeouts"],
+        verdict_match=c["verdict_match"],
+        verdict_mismatch=c["verdict_mismatch"],
+        verdict_invalid_json=c["verdict_invalid_json"],
+        exact_match_rate_pct=round(pct, 2),
+        shadow_sample_rate=float(request.app.state.shadow_sample_rate),
+    )
+
+
+class ConfigPatch(BaseModel):
+    """Runtime-mutable config knobs. All fields optional."""
+
+    shadow_sample_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of traffic to mirror to the candidate LLM. 1.0 = 100%.",
+    )
+
+
+@router.put("/config")
+async def put_runtime_config(patch: ConfigPatch, request: Request) -> dict[str, Any]:
+    """Runtime updates to shadow routing. e.g. flip mirror % from 100% to 50%."""
+    applied: dict[str, Any] = {}
+    if patch.shadow_sample_rate is not None:
+        request.app.state.shadow_sample_rate = float(patch.shadow_sample_rate)
+        applied["shadow_sample_rate"] = request.app.state.shadow_sample_rate
+    return {"applied": applied, "current_shadow_sample_rate": request.app.state.shadow_sample_rate}
+
+
 @router.get("/config", response_model=ConfigOut)
 async def get_runtime_config(
+    request: Request,
     config: AppConfig = Depends(get_config),
     settings: Settings = Depends(get_settings),
 ) -> ConfigOut:
@@ -240,3 +301,7 @@ async def get_runtime_config(
         do_inference_base_url=settings.do_inference_base_url,
         do_inference_key=settings.redacted_key_summary(),
     )
+
+
+# Also add the live shadow_sample_rate to /v1/config for observability.
+# (Consumers already fetch this endpoint; adding a field is backward compatible.)

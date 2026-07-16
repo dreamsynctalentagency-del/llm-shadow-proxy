@@ -191,6 +191,7 @@ class CandidateHandler:
         route_name: str,
         metrics: Metrics | None = None,
         mismatch_tape: Any = None,
+        counters: dict[str, int] | None = None,
     ) -> None:
         self._client = candidate_client
         self._store = store
@@ -200,6 +201,7 @@ class CandidateHandler:
         self._route_name = route_name
         self._metrics = metrics
         self._mismatch_tape = mismatch_tape
+        self._counters = counters
 
     async def __call__(self, job: CandidateJob) -> None:
         request_id = job.request_id
@@ -289,6 +291,12 @@ class CandidateHandler:
                 route=self._route_name, verdict=result.verdict.value
             ).inc()
 
+        # Business counters for GET /v1/metrics
+        if self._counters is not None:
+            key = f"verdict_{result.verdict.value}"
+            if key in ("verdict_match", "verdict_mismatch", "verdict_invalid_json"):
+                self._counters[key] = self._counters.get(key, 0) + 1
+
         # Stream mismatched payloads onto the mismatch tape (SQLite) for
         # offline visualization. Fire-and-forget: never blocks the pipeline.
         if (
@@ -324,6 +332,10 @@ class CandidateHandler:
         model_id: str,
     ) -> None:
         latency_ms = int((time.perf_counter() - start) * 1000)
+        if self._counters is not None:
+            self._counters["shadow_errors"] = self._counters.get("shadow_errors", 0) + 1
+            if outcome_label == "timeout":
+                self._counters["shadow_timeouts"] = self._counters.get("shadow_timeouts", 0) + 1
         if self._metrics is not None:
             self._metrics.candidate_latency.labels(
                 route=self._route_name, model=model_id, outcome=outcome_label

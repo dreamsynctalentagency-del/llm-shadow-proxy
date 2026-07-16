@@ -40,6 +40,28 @@ def _ensure_local_dirs(settings: Settings, db_url: str) -> None:
         settings.resolved_raw_store_path().mkdir(parents=True, exist_ok=True)
 
 
+def _new_counters() -> dict[str, int]:
+    return {
+        "requests_total": 0,
+        "requests_success": 0,
+        "requests_error": 0,
+        "shadow_enqueued": 0,
+        "shadow_sampled_out": 0,
+        "shadow_errors": 0,
+        "shadow_timeouts": 0,
+        "verdict_match": 0,
+        "verdict_mismatch": 0,
+        "verdict_invalid_json": 0,
+    }
+
+
+def _mismatch_tape_path(settings: Settings, db_url: str) -> Path:
+    """Co-locate mismatches.sqlite with the main SQLite DB when possible."""
+    if db_url.startswith("sqlite+aiosqlite:///"):
+        return Path(db_url[len("sqlite+aiosqlite:///"):]).parent / "mismatches.sqlite"
+    return settings.resolved_raw_store_path().parent / "mismatches.sqlite"
+
+
 def _build_raw_store(settings: Settings):  # type: ignore[no-untyped-def]
     if settings.raw_store_type == "spaces" and not settings.do_spaces_bucket:
         return None
@@ -55,7 +77,7 @@ def _build_raw_store(settings: Settings):  # type: ignore[no-untyped-def]
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: PLR0915 — wiring is intentionally linear
     settings: Settings = get_settings()
     configure_logging(level=settings.log_level, fmt=settings.log_format)
     log = get_logger("shadow_proxy.main")
@@ -106,12 +128,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         metrics=metrics,
     )
 
-    # Mismatch tape: dedicated local SQLite file that streams mismatched
-    # payloads for offline debugging / visualization.
-    mismatch_tape = MismatchTape(Path(db_url[len("sqlite+aiosqlite:///"):]).parent / "mismatches.sqlite"
-                                 if db_url.startswith("sqlite+aiosqlite:///")
-                                 else settings._anchor_dir() / "data" / "mismatches.sqlite")
+    mismatch_tape = MismatchTape(_mismatch_tape_path(settings, db_url))
     await mismatch_tape.start()
+
+    rt_counters: dict[str, int] = _new_counters()
 
     handler = CandidateHandler(
         candidate_client=candidate_client,
@@ -122,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         route_name="default",
         metrics=metrics,
         mismatch_tape=mismatch_tape,
+        counters=rt_counters,
     )
     await dispatcher.start(handler)
 
@@ -149,21 +170,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.dispatcher = dispatcher
     app.state.sweeper = sweeper
     app.state.mismatch_tape = mismatch_tape
-    # Mutable at runtime via PUT /v1/config. 1.0 = 100% shadow traffic.
-    app.state.shadow_sample_rate = 1.0
-    # Rolling in-process counters for GET /v1/metrics (fast path, no DB scan).
-    app.state.rt_counters = {
-        "requests_total": 0,
-        "requests_success": 0,
-        "requests_error": 0,
-        "shadow_enqueued": 0,
-        "shadow_sampled_out": 0,
-        "shadow_errors": 0,
-        "shadow_timeouts": 0,
-        "verdict_match": 0,
-        "verdict_mismatch": 0,
-        "verdict_invalid_json": 0,
-    }
+    app.state.shadow_sample_rate = 1.0  # mutable via PUT /v1/config
+    app.state.rt_counters = rt_counters
 
     log.info(
         "app.started",
