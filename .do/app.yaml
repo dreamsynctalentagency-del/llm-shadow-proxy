@@ -1,0 +1,62 @@
+# DigitalOcean App Platform spec — https://docs.digitalocean.com/products/app-platform/reference/app-spec/
+# Placed at repo root so DO detects components automatically.
+name: llm-shadow-proxy
+region: nyc
+
+services:
+  - name: web
+    # Dockerfile is under docker/ — point DO at it explicitly.
+    dockerfile_path: docker/Dockerfile
+    source_dir: /
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 8000
+    routes:
+      - path: /
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 10
+      period_seconds: 15
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      # ---- Secrets: set values in the DO UI (they are encrypted at rest) ----
+      - key: DO_INFERENCE_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DO_SPACES_SECRET
+        scope: RUN_TIME
+        type: SECRET
+
+      # ---- Non-secret runtime config ----
+      - key: DO_INFERENCE_BASE_URL
+        scope: RUN_TIME
+        value: https://inference.do-ai.run/v1
+      - key: RAW_STORE_TYPE
+        scope: RUN_TIME
+        value: spaces
+      - key: DO_SPACES_BUCKET
+        scope: RUN_TIME
+        value: llm-proxy-prod
+      - key: DO_SPACES_REGION
+        scope: RUN_TIME
+        value: nyc3
+      - key: DO_SPACES_ENDPOINT_URL
+        scope: RUN_TIME
+        value: https://nyc3.digitaloceanspaces.com
+      - key: LOG_LEVEL
+        scope: RUN_TIME
+        value: INFO
+      - key: LOG_FORMAT
+        scope: RUN_TIME
+        value: json
+      - key: CONFIG_FILE
+        scope: RUN_TIME
+        value: /app/config/models.yaml
+      # Leave DATABASE_URL unset in the spec — the Dockerfile ENV defaults to
+      # a SQLite file inside the container. Override here if attaching a
+      # managed Postgres cluster (recommended for prod).
