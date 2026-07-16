@@ -1,0 +1,28 @@
+routes:
+  default:
+    primary:
+      # OpenAI GPT (larger) — customer-facing
+      model_id: "openai-gpt-oss-120b"
+      timeout_s: 20
+      max_retries: 1
+    candidate:
+      # OpenAI GPT (smaller) — shadowed A/B against the larger model
+      model_id: "openai-gpt-oss-20b"
+      timeout_s: 20
+      max_retries: 0
+
+evaluator:
+  require_json: true
+  compare_key: "action"
+  normalize: "lowercase_strip"
+
+dispatcher:
+  type: "in_process"
+  queue_capacity: 10000
+  workers: 8
+  overflow_policy: "drop_new"
+
+store:
+  on_failure: "fail_open"
+  sweeper_interval_s: 300
+  stale_threshold_s: 600

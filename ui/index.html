@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LLM Shadow Proxy · Test Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%80%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▚</span>
+      <div class="brand-text">
+        <div class="brand-title">LLM Shadow Proxy</div>
+        <div class="brand-sub">Test Console</div>
+      </div>
+    </div>
+    <div class="stats" id="stats">
+      <div class="stat"><div class="stat-label">Primary</div><div class="stat-value" id="stat-primary">—</div></div>
+      <div class="stat"><div class="stat-label">Candidate</div><div class="stat-value" id="stat-candidate">—</div></div>
+      <div class="stat"><div class="stat-label">Match rate (24h)</div><div class="stat-value" id="stat-match">—</div></div>
+      <div class="stat"><div class="stat-label">Total (24h)</div><div class="stat-value" id="stat-total">—</div></div>
+    </div>
+    <div class="topbar-actions">
+      <input id="apiKey" placeholder="Bearer token (optional)" title="Sent as Authorization header if set" />
+      <a class="btn ghost" href="/docs" target="_blank" rel="noopener">API Docs</a>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="chat-pane">
+      <div class="chat-header">
+        <h2>Chat</h2>
+        <div class="chat-header-actions">
+          <button class="btn ghost" id="clearBtn" title="Clear the local chat log">Clear</button>
+        </div>
+      </div>
+      <div class="chat" id="chat"></div>
+
+      <div class="composer">
+        <details class="system-details">
+          <summary>System prompt</summary>
+          <textarea id="systemPrompt" rows="3">You are a strict router. Reply ONLY as JSON of the form {"action": "<verb>"}. Do not include any prose.</textarea>
+        </details>
+        <div class="composer-row">
+          <textarea id="userInput" rows="2" placeholder="Ask something… e.g. book a flight to Paris"></textarea>
+          <button id="sendBtn" class="btn primary">Send</button>
+        </div>
+        <div class="composer-hints">
+          <span>Enter to send · Shift+Enter for newline</span>
+          <span id="statusLine"></span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side-pane">
+      <div class="side-header">
+        <h2>Recent evaluations</h2>
+        <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+      </div>
+      <div id="recent" class="recent-list"></div>
+    </aside>
+  </main>
+
+  <template id="msg-template">
+    <div class="msg">
+      <div class="msg-head">
+        <span class="role"></span>
+        <span class="req-id mono"></span>
+      </div>
+      <div class="msg-body mono"></div>
+      <div class="badges"></div>
+
+      <details class="raw-detail primary-raw-detail" hidden>
+        <summary>Primary raw JSON</summary>
+        <pre class="mono raw-json primary-raw"></pre>
+      </details>
+
+      <div class="candidate-block" hidden>
+        <div class="candidate-head">
+          <span class="candidate-label">CANDIDATE</span>
+          <span class="candidate-model mono"></span>
+        </div>
+        <div class="candidate-body mono"></div>
+        <div class="reasons mono"></div>
+        <details class="raw-detail candidate-raw-detail" hidden>
+          <summary>Candidate raw JSON</summary>
+          <pre class="mono raw-json candidate-raw"></pre>
+        </details>
+      </div>
+    </div>
+  </template>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+[project]
+name = "llm-shadow-proxy"
+version = "0.1.0"
+description = "Production-ready API proxy that shadows Primary LLM traffic to a Candidate LLM and evaluates responses with deterministic heuristics."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "LLM Platform" },
+]
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "openai>=1.40",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+  "pyyaml>=6.0",
+  "sqlalchemy>=2.0",
+  "aiosqlite>=0.20",
+  "asyncpg>=0.29",
+  "structlog>=24.1",
+  "prometheus-client>=0.20",
+  "python-ulid>=2.7",
+  "python-multipart>=0.0.9",
+  "aioboto3>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "httpx>=0.27",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "types-PyYAML",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+shadow_proxy = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "RET", "ARG", "PL"]
+ignore = [
+  "PLR0913",  # too many function arguments (fine for DI)
+  "B008",     # Depends() in default args is idiomatic FastAPI
+  "PLC0415",  # import-outside-top-level (used sparingly for lazy imports)
+  "UP037",    # quoted annotations (harmless with TYPE_CHECKING)
+  "UP042",    # `(str, Enum)` is fine; StrEnum only in 3.11+
+  "SIM105",   # try/except/pass reads clearly for our short blocks
+  "N818",     # exception naming (LLMTimeout is a stable public name)
+  "PLR2004",  # HTTP status code literals read naturally in place
+  "ARG001",   # some route deps (DB readyz) are named to signal they're deps
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "ARG001", "ARG002", "PLR0915"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+mypy_path = "src"

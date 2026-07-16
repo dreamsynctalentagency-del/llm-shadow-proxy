@@ -1,0 +1,15 @@
+# Override for docker compose that uses SQLite instead of Postgres.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build proxy
+#
+# Postgres is not started; the "proxy" service uses SQLite inside the
+# "proxydata" volume, matching the container defaults from the Dockerfile.
+services:
+  postgres:
+    profiles:
+      - disabled
+
+  proxy:
+    depends_on: []
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////app/data/comparisons.db

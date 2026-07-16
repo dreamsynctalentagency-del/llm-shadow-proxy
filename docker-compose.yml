@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shadow
+      POSTGRES_PASSWORD: shadow
+      POSTGRES_DB: shadow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadow -d shadow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: llm-shadow-proxy:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Provided by .env or the host shell:
+      DO_INFERENCE_BASE_URL: ${DO_INFERENCE_BASE_URL:-https://inference.do-ai.run/v1}
+      DO_INFERENCE_API_KEY: ${DO_INFERENCE_API_KEY:?Set DO_INFERENCE_API_KEY in .env or shell}
+      PROXY_API_KEYS: ${PROXY_API_KEYS:-}
+      # Container-internal defaults (Postgres via the compose network):
+      DATABASE_URL: postgresql+asyncpg://shadow:shadow@postgres:5432/shadow
+      RAW_STORE_TYPE: filesystem
+      RAW_STORE_FILESYSTEM_PATH: /app/data/raw
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      CONFIG_FILE: /app/config/models.yaml
+    ports:
+      - "8000:8000"
+    volumes:
+      - proxydata:/app/data
+      # Live-reload the route config without rebuilding the image:
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pgdata:
+  proxydata:
