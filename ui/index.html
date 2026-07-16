@@ -56,12 +56,36 @@
 
     <aside class="side-pane">
       <div class="side-header">
+        <h2>Live metrics</h2>
+        <span class="mono side-header-sub" id="metrics-tick">—</span>
+      </div>
+      <div class="metrics-grid" id="metrics-grid"></div>
+
+      <div class="side-header">
+        <h2>Shadow sample rate</h2>
+        <span class="mono side-header-sub" id="sample-rate-value">100%</span>
+      </div>
+      <div class="sample-rate-row">
+        <input type="range" id="sample-rate" min="0" max="100" step="5" value="100" />
+        <button class="btn ghost sm" id="sample-rate-apply">Apply</button>
+      </div>
+      <div class="hint" id="sample-rate-status">1.0 = mirror every request. 0.0 = disable shadow.</div>
+
+      <div class="side-header">
         <h2>Recent evaluations</h2>
         <button class="btn ghost sm" id="refreshBtn">Refresh</button>
       </div>
       <div id="recent" class="recent-list"></div>
     </aside>
   </main>
+
+  <section class="api-explorer">
+    <div class="api-explorer-header">
+      <h2>API Explorer</h2>
+      <span class="hint">Every endpoint exposed by the service — click Try to hit it live.</span>
+    </div>
+    <div class="api-cards" id="api-cards"></div>
+  </section>
 
   <template id="msg-template">
     <div class="msg">

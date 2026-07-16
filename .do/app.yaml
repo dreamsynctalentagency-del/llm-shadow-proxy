@@ -1,5 +1,25 @@
-# DigitalOcean App Platform spec — https://docs.digitalocean.com/products/app-platform/reference/app-spec/
-# Placed at repo root so DO detects components automatically.
+# =========================================================================
+#  DigitalOcean App Platform spec
+#  https://docs.digitalocean.com/products/app-platform/reference/app-spec/
+#
+#  ⚠️  DEPLOYER ACTION REQUIRED — SET THREE SECRETS BEFORE FIRST DEPLOY
+#
+#  The three envs below marked `type: SECRET` are declared with NO value.
+#  DO does NOT populate them from this file — you must set the values in:
+#
+#     DO Console → Apps → llm-shadow-proxy → Settings
+#                → App-Level Environment Variables
+#
+#  Required values (paste from your local .env):
+#     DO_INFERENCE_API_KEY   your DO Inference model access key
+#     DO_SPACES_KEY          your DO Spaces access key ID
+#     DO_SPACES_SECRET       your DO Spaces secret access key
+#
+#  Without these the app hard-fails at boot with:
+#     RuntimeError: DO_INFERENCE_API_KEY is not set.
+#  That's intentional fail-loud behaviour — see settings.assert_runtime_ready.
+# =========================================================================
+
 name: llm-shadow-proxy
 region: nyc
 
@@ -21,7 +41,10 @@ services:
       success_threshold: 1
       failure_threshold: 3
     envs:
-      # ---- Secrets: set values in the DO UI (they are encrypted at rest) ----
+      # ------------------------------------------------------------
+      #  SECRETS — VALUES MUST BE SET IN DO CONSOLE (see file header).
+      #  Do NOT add `value:` lines here — those get committed to git.
+      # ------------------------------------------------------------
       - key: DO_INFERENCE_API_KEY
         scope: RUN_TIME
         type: SECRET

@@ -348,8 +348,282 @@ els.userInput.addEventListener('keydown', (e) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+//  Live metrics panel  →  polls GET /v1/metrics every 3s
+// ---------------------------------------------------------------------------
+const METRIC_CARDS = [
+  { key: 'requests_total',       label: 'Requests total',     fmt: v => v },
+  { key: 'requests_success',     label: 'Successful',         fmt: v => v },
+  { key: 'shadow_enqueued',      label: 'Shadow enqueued',    fmt: v => v },
+  { key: 'shadow_sampled_out',   label: 'Sampled out',        fmt: v => v },
+  { key: 'shadow_errors',        label: 'Shadow errors',      fmt: v => v, danger: v => v > 0 },
+  { key: 'shadow_timeouts',      label: 'Shadow timeouts',    fmt: v => v, danger: v => v > 0 },
+  { key: 'verdict_match',        label: 'Verdict: match',     fmt: v => v, ok: v => v > 0 },
+  { key: 'verdict_mismatch',     label: 'Verdict: mismatch',  fmt: v => v, warn: v => v > 0 },
+  { key: 'verdict_invalid_json', label: 'Verdict: invalid',   fmt: v => v, warn: v => v > 0 },
+  { key: 'exact_match_rate_pct', label: 'Exact match %',      fmt: v => `${v.toFixed(1)}%` },
+  { key: 'shadow_sample_rate',   label: 'Sample rate',        fmt: v => `${(100*v).toFixed(0)}%` },
+];
+
+function renderMetricsSkeleton() {
+  const el = document.getElementById('metrics-grid');
+  el.innerHTML = METRIC_CARDS.map(c =>
+    `<div class="metric-card" data-key="${c.key}">
+       <div class="metric-label">${c.label}</div>
+       <div class="metric-value mono">—</div>
+     </div>`
+  ).join('');
+}
+
+async function refreshLiveMetrics() {
+  try {
+    const r = await fetch('/v1/metrics', { headers: authHeaders() });
+    if (!r.ok) return;
+    const data = await r.json();
+    for (const c of METRIC_CARDS) {
+      const card = document.querySelector(`.metric-card[data-key="${c.key}"]`);
+      if (!card) continue;
+      const val = data[c.key];
+      card.querySelector('.metric-value').textContent = c.fmt(val);
+      card.classList.toggle('is-danger', !!(c.danger && c.danger(val)));
+      card.classList.toggle('is-warn',   !!(c.warn   && c.warn(val)));
+      card.classList.toggle('is-ok',     !!(c.ok     && c.ok(val)));
+    }
+    document.getElementById('metrics-tick').textContent =
+      new Date().toLocaleTimeString();
+    // Keep the sample-rate slider in sync with server state
+    const rate = data.shadow_sample_rate;
+    if (typeof rate === 'number' && !document.activeElement.matches('#sample-rate')) {
+      const slider = document.getElementById('sample-rate');
+      slider.value = Math.round(rate * 100);
+      document.getElementById('sample-rate-value').textContent =
+        `${Math.round(rate * 100)}%`;
+    }
+  } catch { /* ignore */ }
+}
+
+// ---------------------------------------------------------------------------
+//  Sample-rate slider  →  PUT /v1/config
+// ---------------------------------------------------------------------------
+function initSampleRateControl() {
+  const slider = document.getElementById('sample-rate');
+  const label  = document.getElementById('sample-rate-value');
+  const status = document.getElementById('sample-rate-status');
+  const apply  = document.getElementById('sample-rate-apply');
+
+  slider.addEventListener('input', () => {
+    label.textContent = `${slider.value}%`;
+  });
+  apply.addEventListener('click', async () => {
+    const rate = Number(slider.value) / 100;
+    status.textContent = 'applying…';
+    try {
+      const r = await fetch('/v1/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ shadow_sample_rate: rate }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      status.textContent = `applied · server sample_rate = ${j.current_shadow_sample_rate}`;
+      status.className = 'hint text-ok';
+    } catch (e) {
+      status.textContent = `failed: ${e.message}`;
+      status.className = 'hint text-err';
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  API Explorer  →  a card per endpoint with "Try it" button
+// ---------------------------------------------------------------------------
+const API_ENDPOINTS = [
+  {
+    method: 'POST', path: '/v1/chat',
+    desc: 'Customer-facing primary chat proxy. Shadows to candidate.',
+    body: {
+      messages: [
+        { role: 'system', content: 'Reply ONLY as JSON: {"action": "<verb>"}. No prose.' },
+        { role: 'user',   content: 'cancel my subscription' },
+      ],
+      temperature: 0.0,
+      max_completion_tokens: 1024,
+    },
+  },
+  {
+    method: 'GET',  path: '/v1/metrics',
+    desc: 'Real-time business counters: total requests, shadow errors/timeouts, exact match %.',
+  },
+  {
+    method: 'GET',  path: '/v1/config',
+    desc: 'Current runtime config: models, evaluator, dispatcher, env_file, DO key length.',
+  },
+  {
+    method: 'PUT',  path: '/v1/config',
+    desc: 'Dynamic runtime updates. Try flipping shadow_sample_rate here.',
+    body: { shadow_sample_rate: 0.5 },
+  },
+  {
+    method: 'GET',  path: '/v1/evaluations',
+    desc: 'List recent comparison records. Supports ?verdict=&limit=&since=.',
+    query: { limit: 10 },
+  },
+  {
+    method: 'GET',  path: '/v1/evaluations/summary',
+    desc: 'Verdict distribution + latency percentiles over a rolling window.',
+    query: { window_seconds: 86400 },
+  },
+  {
+    method: 'GET',  path: '/v1/evaluations/{id}',
+    desc: 'Fetch a single comparison row by request_id.',
+    pathParam: { id: 'paste-a-request-id' },
+  },
+  {
+    method: 'GET',  path: '/v1/evaluations/{id}/raw',
+    desc: 'Pull the full LLM payloads (primary + candidate) from RawStore/Spaces.',
+    pathParam: { id: 'paste-a-request-id' },
+  },
+  {
+    method: 'GET',  path: '/healthz',
+    desc: 'Liveness probe. Cheap, no DB touch.',
+  },
+  {
+    method: 'GET',  path: '/readyz',
+    desc: 'Readiness probe. Verifies DB connectivity.',
+  },
+  {
+    method: 'GET',  path: '/metrics',
+    desc: 'Prometheus-format metrics scrape endpoint. Returns text/plain.',
+    responseType: 'text',
+  },
+];
+
+function makeApiCard(ep) {
+  const wrap = document.createElement('div');
+  wrap.className = 'api-card';
+  const methodCls = `method-${ep.method.toLowerCase()}`;
+
+  const pathInputs = ep.pathParam
+    ? Object.entries(ep.pathParam).map(([k, v]) =>
+        `<label class="mono">{${k}}<input class="api-path-input mono" data-name="${k}" value="${v}" /></label>`
+      ).join('')
+    : '';
+
+  const queryInputs = ep.query
+    ? Object.entries(ep.query).map(([k, v]) =>
+        `<label class="mono">?${k}<input class="api-query-input mono" data-name="${k}" value="${v}" /></label>`
+      ).join('')
+    : '';
+
+  const bodyPre = ep.body
+    ? `<details class="api-body-details">
+         <summary>Request body (editable JSON)</summary>
+         <textarea class="mono api-body">${JSON.stringify(ep.body, null, 2)}</textarea>
+       </details>`
+    : '';
+
+  wrap.innerHTML = `
+    <div class="api-card-head">
+      <span class="method-badge ${methodCls}">${ep.method}</span>
+      <span class="api-path mono">${ep.path}</span>
+      <button class="btn primary sm api-try">Try</button>
+    </div>
+    <div class="api-desc">${ep.desc}</div>
+    ${pathInputs || queryInputs ? `<div class="api-params">${pathInputs}${queryInputs}</div>` : ''}
+    ${bodyPre}
+    <div class="api-response" hidden>
+      <div class="api-response-head">
+        <span class="mono api-status"></span>
+        <span class="mono api-latency"></span>
+      </div>
+      <pre class="mono api-response-body"></pre>
+    </div>
+  `;
+  wrap.querySelector('.api-try').addEventListener('click', () => runEndpoint(ep, wrap));
+  return wrap;
+}
+
+async function runEndpoint(ep, wrap) {
+  let url = ep.path;
+  if (ep.pathParam) {
+    for (const input of wrap.querySelectorAll('.api-path-input')) {
+      url = url.replace(`{${input.dataset.name}}`, encodeURIComponent(input.value.trim()));
+    }
+  }
+  if (ep.query) {
+    const params = new URLSearchParams();
+    for (const input of wrap.querySelectorAll('.api-query-input')) {
+      if (input.value.trim() !== '') params.set(input.dataset.name, input.value.trim());
+    }
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
+  }
+
+  const opts = {
+    method: ep.method,
+    headers: { 'Accept': ep.responseType === 'text' ? '*/*' : 'application/json', ...authHeaders() },
+  };
+  if (ep.body) {
+    const raw = wrap.querySelector('.api-body').value;
+    try {
+      const parsed = JSON.parse(raw);
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(parsed);
+    } catch (e) {
+      showResponse(wrap, 0, 0, `JSON parse error: ${e.message}`);
+      return;
+    }
+  }
+
+  const respBox = wrap.querySelector('.api-response');
+  respBox.hidden = false;
+  wrap.querySelector('.api-status').textContent = 'sending…';
+  wrap.querySelector('.api-latency').textContent = '';
+  wrap.querySelector('.api-response-body').textContent = '';
+
+  const t0 = performance.now();
+  try {
+    const r = await fetch(url, opts);
+    const dt = Math.round(performance.now() - t0);
+    let body;
+    if (ep.responseType === 'text') {
+      body = await r.text();
+    } else {
+      const text = await r.text();
+      try { body = JSON.stringify(JSON.parse(text), null, 2); }
+      catch { body = text; }
+    }
+    showResponse(wrap, r.status, dt, body);
+  } catch (e) {
+    showResponse(wrap, 0, Math.round(performance.now() - t0), `Network error: ${e.message}`);
+  }
+}
+
+function showResponse(wrap, status, dt, body) {
+  const statusEl  = wrap.querySelector('.api-status');
+  const latencyEl = wrap.querySelector('.api-latency');
+  const bodyEl    = wrap.querySelector('.api-response-body');
+  statusEl.textContent = status ? `HTTP ${status}` : 'ERROR';
+  statusEl.className = 'mono api-status ' +
+    (status >= 200 && status < 300 ? 'text-ok' : status ? 'text-err' : 'text-err');
+  latencyEl.textContent = `${dt}ms`;
+  bodyEl.textContent = body || '(empty)';
+}
+
+function renderApiExplorer() {
+  const host = document.getElementById('api-cards');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const ep of API_ENDPOINTS) host.appendChild(makeApiCard(ep));
+}
+
 // Initial paint
+renderMetricsSkeleton();
+refreshLiveMetrics();
+initSampleRateControl();
+renderApiExplorer();
 refreshStats();
 refreshRecent();
+setInterval(refreshLiveMetrics, 3_000);
 setInterval(refreshStats, 15_000);
 setInterval(refreshRecent, 15_000);
